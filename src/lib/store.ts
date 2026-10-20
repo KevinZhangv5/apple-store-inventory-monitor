@@ -88,6 +88,12 @@ const DEFAULT_SETTINGS: Settings = {
   intervalSeconds: 30,
   barkUrl: "",
   productBarkUrls: {},
+  barkOptions: {
+    level: "default",
+    sound: "",
+    volume: null,
+    call: false,
+  },
   soundEnabled: true,
   openOnHit: "bag",
   stopOnHit: false,

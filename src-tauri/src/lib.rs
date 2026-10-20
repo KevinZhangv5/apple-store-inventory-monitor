@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use apw_core::catalog::Catalog;
 use apw_core::config::{ClashSettings, MIN_INTERVAL_SECONDS, OpenOnHit, Settings, SettingsStore};
 use apw_core::model::{Category, Product, REGIONS, Store, Target, region_by_locale};
-use apw_core::notify::{Bark, Multi, Notification, Notifier, Sound};
+use apw_core::notify::{Bark, BarkPush, Multi, Notification, Notifier, Sound};
 use apw_core::watcher::{Event, TargetState, Watcher, WatcherConfig};
 use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem};
@@ -1069,7 +1069,13 @@ async fn dispatch_notification(
             .unwrap_or_default();
         // Bark 每次现构造：地址是用户随时可改的设置项，缓存实例会在改完地址后
         // 继续往旧地址推。共享的 http 客户端一并传进去，连接池仍然复用。
-        channels.push(Bark::new(bark_url.to_owned(), http));
+        let push = BarkPush {
+            level: settings.bark_options.level,
+            sound: settings.bark_options.sound.clone(),
+            volume: settings.bark_options.volume,
+            call: settings.bark_options.call,
+        };
+        channels.push(Bark::new(bark_url.to_owned(), http).with_push(push));
     }
     if channels.is_empty() {
         return Ok(());
@@ -1325,8 +1331,70 @@ fn should_pause_monitoring(
         }
 }
 
+/// 一次到货提醒要发送的内容，以及发送成功后写进活动日志的说明。
+struct HitAlert {
+    notification: Notification,
+    bark_url: String,
+    has_product_bark: bool,
+    sound_enabled: bool,
+    opened_destination: Option<OpenOnHit>,
+    store_title: String,
+    product_name: String,
+}
+
+/// 发送一次到货提醒，并把结果写进活动日志。
+async fn send_hit_alert(app: &AppHandle, alert: HitAlert) {
+    if let Err(err) = dispatch_notification(app, alert.notification, &alert.bark_url).await {
+        // 提醒没发出去是遗憾，但绝不能让监控本身停下来。
+        let _ = app.emit(NOTICE_CHANNEL, format!("发送提醒时出错：{err}"));
+        return;
+    }
+    let mut actions = Vec::new();
+    if alert.sound_enabled {
+        actions.push("提示音");
+    }
+    if !alert.bark_url.trim().is_empty() {
+        actions.push(if alert.has_product_bark {
+            "Bark（型号专属）"
+        } else {
+            "Bark"
+        });
+    }
+    if let Some(destination) = alert.opened_destination {
+        match destination {
+            OpenOnHit::Bag => actions.push("已打开购物袋"),
+            OpenOnHit::EducationBag => actions.push("已打开教育商店购物袋"),
+            OpenOnHit::Product => actions.push("已打开商品页"),
+            OpenOnHit::None => {}
+        }
+    }
+    if actions.is_empty() {
+        return;
+    }
+    let _ = app.emit(
+        NOTICE_CHANNEL,
+        format!(
+            "到货提醒已执行：{} {}（{}）",
+            alert.store_title,
+            alert.product_name,
+            actions.join("、")
+        ),
+    );
+}
+
 /// 消费引擎事件：转发给前端，并在有货时发提醒。
 async fn pump_events(app: AppHandle, mut events: tokio::sync::mpsc::Receiver<Event>) {
+    // 到货提醒交给单独的发送队列：Bark 服务器慢时要等满超时，提示音也要等播完，
+    // 原地等待会拖住事件循环，引擎往通道里发下一条事件时跟着被卡住。队列只有
+    // 一个消费者，提醒仍按到货顺序逐条发送，与原来串行发送的效果一致。
+    let (alerts, mut queue) = tokio::sync::mpsc::unbounded_channel::<HitAlert>();
+    let sender_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(alert) = queue.recv().await {
+            send_hit_alert(&sender_app, alert).await;
+        }
+    });
+
     while let Some(event) = events.recv().await {
         // 先原样转发。前端拿到的事件流应当与引擎发出的完全一致，
         // 中间少一层可能出错的翻译。
@@ -1434,42 +1502,15 @@ async fn pump_events(app: AppHandle, mut events: tokio::sync::mpsc::Receiver<Eve
                 }
             }
 
-            if let Err(err) = dispatch_notification(&app, notification, &bark_url).await {
-                // 提醒没发出去是遗憾，但绝不能让监控本身停下来。
-                let _ = app.emit(NOTICE_CHANNEL, format!("发送提醒时出错：{err}"));
-            } else {
-                let mut actions = Vec::new();
-                if settings.sound_enabled {
-                    actions.push("提示音");
-                }
-                if !bark_url.trim().is_empty() {
-                    actions.push(if has_product_bark {
-                        "Bark（型号专属）"
-                    } else {
-                        "Bark"
-                    });
-                }
-                if let Some(destination) = opened_destination {
-                    match destination {
-                        OpenOnHit::Bag => actions.push("已打开购物袋"),
-                        OpenOnHit::EducationBag => actions.push("已打开教育商店购物袋"),
-                        OpenOnHit::Product => actions.push("已打开商品页"),
-                        OpenOnHit::None => {}
-                    }
-                }
-                if actions.is_empty() {
-                    continue;
-                }
-                let _ = app.emit(
-                    NOTICE_CHANNEL,
-                    format!(
-                        "到货提醒已执行：{} {}（{}）",
-                        target.store_title,
-                        target.product_name,
-                        actions.join("、")
-                    ),
-                );
-            }
+            let _ = alerts.send(HitAlert {
+                notification,
+                bark_url,
+                has_product_bark,
+                sound_enabled: settings.sound_enabled,
+                opened_destination,
+                store_title: target.store_title.clone(),
+                product_name: target.product_name.clone(),
+            });
         }
     }
 }
