@@ -142,6 +142,21 @@ export interface NetworkSettings {
   clash: ClashSettings;
 }
 
+/** Bark 推送的中断级别，与 Rust 侧 `BarkLevel` 一一对应。 */
+export type BarkLevel = "default" | "active" | "time_sensitive" | "passive" | "critical";
+
+/** Bark 推送的增强参数，与 Rust 侧 `BarkOptions` 一一对应。 */
+export interface BarkOptions {
+  /** 通知等级；default 表示不指定，与旧版行为一致。 */
+  level: BarkLevel;
+  /** 铃声名；空表示用 Bark 默认铃声。 */
+  sound: string;
+  /** 重要警告（critical）的通知音量 0-10；null 表示不指定。 */
+  volume: number | null;
+  /** 持续响铃：重复播放铃声约 30 秒。 */
+  call: boolean;
+}
+
 /** 自动结账使用的付款方式，与 Rust 侧 `CheckoutPayment` 一一对应。 */
 export type CheckoutPayment = "alipay" | "wechat" | "installment";
 
@@ -218,6 +233,7 @@ export interface Settings {
   /** 按商品零件号覆盖默认 Bark；同一型号在不同门店共用。 */
   productBarkUrls: Record<string, string>;
   barkUrl: string;
+  barkOptions: BarkOptions;
   soundEnabled: boolean;
   openOnHit: OpenOnHit;
   /** 监控到有货后是否暂停监控；关闭时持续有货会每轮重复提醒。 */

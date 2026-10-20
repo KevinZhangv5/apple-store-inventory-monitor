@@ -15,10 +15,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::os::unix::fs::PermissionsExt;
 
 use apw_core::config::{
-    CheckoutPayment, CheckoutSettings, ClashSettings, ConfigError, DEFAULT_INTERVAL_SECONDS,
-    MAX_SETTINGS_BYTES, NetworkMode, NetworkSettings, OpenOnHit, Settings, SettingsStore,
+    BarkOptions, CheckoutPayment, CheckoutSettings, ClashSettings, ConfigError,
+    DEFAULT_INTERVAL_SECONDS, MAX_SETTINGS_BYTES, NetworkMode, NetworkSettings, OpenOnHit,
+    Settings, SettingsStore,
 };
 use apw_core::model::Target;
+use apw_core::notify::BarkLevel;
 
 /// 用完自动删掉的临时目录。
 ///
@@ -97,6 +99,12 @@ fn 样例设置() -> Settings {
         product_bark_urls: [("MG724CH/A".into(), "https://api.day.app/friend".into())]
             .into_iter()
             .collect(),
+        bark_options: BarkOptions {
+            level: BarkLevel::Critical,
+            sound: "alarm".into(),
+            volume: Some(8),
+            call: true,
+        },
         sound_enabled: false,
         open_on_hit: OpenOnHit::Product,
         stop_on_hit: true,
@@ -588,6 +596,7 @@ fn 设置的线上格式是小驼峰() {
         "intervalSeconds",
         "barkUrl",
         "productBarkUrls",
+        "barkOptions",
         "soundEnabled",
         "openOnHit",
         "stopOnHit",
@@ -599,7 +608,7 @@ fn 设置的线上格式是小驼峰() {
     assert!(!obj.contains_key("interval_seconds"), "不该有蛇形字段");
     assert_eq!(obj.get("openOnHit"), Some(&serde_json::json!("product")));
     assert!(!obj.contains_key("openBagOnHit"));
-    assert_eq!(obj.len(), 11);
+    assert_eq!(obj.len(), 12);
     assert_eq!(
         obj.get("network"),
         Some(&serde_json::json!({
@@ -614,6 +623,16 @@ fn 设置的线上格式是小驼峰() {
             }
         }))
     );
+    assert_eq!(
+        obj.get("barkOptions"),
+        Some(&serde_json::json!({
+            "level": "critical",
+            "sound": "alarm",
+            "volume": 8,
+            "call": true
+        }))
+    );
+    assert!(!obj.contains_key("bark_options"), "不该有蛇形字段");
 }
 
 #[test]
@@ -688,6 +707,21 @@ fn 旧设置缺少线路字段时继续跟随系统代理() {
         serde_json::from_str(r#"{"locale":"zh_CN","intervalSeconds":30}"#).expect("旧设置应可读取");
     assert_eq!(settings.network.mode, NetworkMode::System);
     assert_eq!(settings.network.clash, ClashSettings::default());
+    assert_eq!(
+        settings.bark_options,
+        BarkOptions::default(),
+        "旧设置没有 Bark 增强参数时全部保持默认"
+    );
+}
+
+#[test]
+fn 铃声与音量设置会被规范化() {
+    let mut settings = Settings::default();
+    settings.bark_options.volume = Some(25); // 音量封顶 10
+    settings.bark_options.sound = "  alarm  ".into(); // 铃声去空白
+    settings.normalize();
+    assert_eq!(settings.bark_options.volume, Some(10));
+    assert_eq!(settings.bark_options.sound, "alarm");
 }
 
 #[test]

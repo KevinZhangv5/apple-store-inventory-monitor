@@ -30,6 +30,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{DeliveryRegion, REGIONS, Target, region_by_locale};
+use crate::notify::BarkLevel;
 
 /// 检测到有货时自动打开的 Apple 页面。
 ///
@@ -375,6 +376,32 @@ impl CheckoutSettings {
     }
 }
 
+/// Bark 推送的增强参数。
+///
+/// 全部字段都有「不改变旧行为」的默认值：等级不指定、铃声为空、音量为
+/// `None`、不持续响铃。只有用户显式设置过的项才会进入推送请求。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BarkOptions {
+    /// 通知中断级别；`default` 表示不指定（等同于 Bark 默认的 `active`）。
+    pub level: BarkLevel,
+    /// 铃声名；空表示用 Bark 默认铃声。
+    pub sound: String,
+    /// 重要警告（critical）的通知音量 0-10；`None` 表示不指定。
+    pub volume: Option<u8>,
+    /// 持续响铃（`call=1`）：重复播放铃声约 30 秒。
+    pub call: bool,
+}
+
+impl BarkOptions {
+    fn normalize(&mut self) {
+        self.sound = self.sound.trim().to_string();
+        if let Some(volume) = &mut self.volume {
+            *volume = (*volume).min(10);
+        }
+    }
+}
+
 /// 持久化的用户设置。
 ///
 /// 字段名跨 IPC 边界要和前端对齐，所以统一小驼峰，与 [`Target`]、
@@ -398,6 +425,8 @@ pub struct Settings {
     pub bark_url: String,
     /// 按商品零件号覆盖默认 Bark；同一型号在不同门店共用一条路由。
     pub product_bark_urls: BTreeMap<String, String>,
+    /// Bark 推送的增强参数。
+    pub bark_options: BarkOptions,
     /// 有货时是否播放提示音。
     pub sound_enabled: bool,
     /// 有货时自动打开的页面；旧字段 `openBagOnHit` 通过别名兼容。
@@ -428,6 +457,7 @@ impl Default for Settings {
             interval_seconds: DEFAULT_INTERVAL_SECONDS,
             bark_url: String::new(),
             product_bark_urls: BTreeMap::new(),
+            bark_options: BarkOptions::default(),
             sound_enabled: true,
             open_on_hit: OpenOnHit::Bag,
             stop_on_hit: false,
@@ -500,6 +530,7 @@ impl Settings {
         });
 
         self.network.normalize();
+        self.bark_options.normalize();
         self.checkout.normalize();
         // 旧模式仍要求明确的单商品；自动加购模式由每次到货的目标决定商品。
         if !self.checkout.auto_add_to_bag
@@ -966,6 +997,7 @@ impl LegacySettings {
                 .unwrap_or(fallback.interval_seconds),
             bark_url: self.bark_url.unwrap_or(fallback.bark_url),
             product_bark_urls: BTreeMap::new(),
+            bark_options: fallback.bark_options,
             sound_enabled: self.sound_enabled.unwrap_or(fallback.sound_enabled),
             open_on_hit: match self.open_bag_on_hit {
                 Some(true) => OpenOnHit::Bag,
