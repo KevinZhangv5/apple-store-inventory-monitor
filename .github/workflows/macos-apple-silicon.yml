@@ -1,11 +1,11 @@
-name: Build macOS Intel
+name: Build macOS Apple Silicon
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - '.github/workflows/macos-intel.yml'
+      - '.github/workflows/macos-apple-silicon.yml'
       - 'src/**'
       - 'src-tauri/**'
       - 'crates/**'
@@ -21,13 +21,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-intel-${{ github.ref }}
+  group: macos-apple-silicon-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: macOS Intel (x86_64) DMG
-    runs-on: macos-15-intel
+    name: macOS Apple Silicon (ARM64) DMG
+    runs-on: macos-latest
     timeout-minutes: 45
     defaults:
       run:
@@ -37,8 +37,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Verify Intel runner
-        run: test "$(uname -m)" = x86_64
+      - name: Verify Apple Silicon runner
+        run: test "$(uname -m)" = arm64
 
       - uses: pnpm/action-setup@v6
         with:
@@ -51,22 +51,22 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-apple-darwin
+          targets: aarch64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: '. -> target'
-          key: macos-intel-dmg
+          key: macos-apple-silicon-dmg
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
       # Keep the macOS ad-hoc signature configured in tauri.macos.conf.json.
       # Only updater artifacts are disabled: this fork does not own upstream's key.
-      - name: Build Intel application and DMG
+      - name: Build Apple Silicon application and DMG
         run: >-
           pnpm tauri build
-          --target x86_64-apple-darwin
+          --target aarch64-apple-darwin
           --bundles app,dmg
           --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
@@ -74,10 +74,10 @@ jobs:
         id: package
         run: |
           set -euo pipefail
-          bundle_dir=target/x86_64-apple-darwin/release/bundle
+          bundle_dir=target/aarch64-apple-darwin/release/bundle
           app_path="$bundle_dir/macos/果到雷达.app"
           binary="$app_path/Contents/MacOS/apple-store-inventory-monitor"
-          test "$(lipo -archs "$binary")" = x86_64
+          test "$(lipo -archs "$binary")" = arm64
           codesign --verify --deep --strict --verbose=2 "$app_path"
           version=$(node -p "require('./package.json').version")
           mkdir -p installers
@@ -85,16 +85,16 @@ jobs:
           images=("$bundle_dir"/dmg/*.dmg)
           test "${#images[@]}" -eq 1
           hdiutil verify "${images[0]}"
-          filename="apple-store-inventory-monitor_${version}_x64.dmg"
+          filename="apple-store-inventory-monitor_${version}_aarch64.dmg"
           cp "${images[0]}" "installers/$filename"
           (cd installers && shasum -a 256 "$filename" > SHA256SUMS.txt)
-          printf 'Version: %s\nTarget: x86_64-apple-darwin\nCommit: %s\nSigning: ad-hoc\n' \
+          printf 'Version: %s\nTarget: aarch64-apple-darwin\nCommit: %s\nSigning: ad-hoc\n' \
             "$version" "$GITHUB_SHA" > installers/BUILD-INFO.txt
-          echo "name=apple-store-inventory-monitor_${version}_macos_x64" >> "$GITHUB_OUTPUT"
+          echo "name=apple-store-inventory-monitor_${version}_macos_aarch64" >> "$GITHUB_OUTPUT"
           {
-            echo '### Intel Mac installer'
+            echo '### Apple Silicon Mac installer'
             echo "- Version: $version"
-            echo '- Architecture: x86_64 only'
+            echo '- Architecture: arm64 only'
             echo '- Signature: verified ad-hoc (not notarized)'
             echo "- Download the artifact containing $filename and SHA256SUMS.txt."
           } >> "$GITHUB_STEP_SUMMARY"
