@@ -1,0 +1,107 @@
+name: Build macOS Intel
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-intel.yml'
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'crates/**'
+      - 'public/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'vite.config.ts'
+      - 'tsconfig*.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-intel-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: macOS Intel (x86_64) DMG
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify Intel runner
+        run: test "$(uname -m)" = x86_64
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          key: macos-intel-dmg
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Keep the macOS ad-hoc signature configured in tauri.macos.conf.json.
+      # Only updater artifacts are disabled: this fork does not own upstream's key.
+      - name: Build Intel application and DMG
+        run: >-
+          pnpm tauri build
+          --target x86_64-apple-darwin
+          --bundles app,dmg
+          --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Verify architecture, signature and disk image
+        id: package
+        run: |
+          set -euo pipefail
+          bundle_dir=target/x86_64-apple-darwin/release/bundle
+          app_path="$bundle_dir/macos/果到雷达.app"
+          binary="$app_path/Contents/MacOS/apple-store-inventory-monitor"
+          test "$(lipo -archs "$binary")" = x86_64
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          version=$(node -p "require('./package.json').version")
+          mkdir -p installers
+          shopt -s nullglob
+          images=("$bundle_dir"/dmg/*.dmg)
+          test "${#images[@]}" -eq 1
+          hdiutil verify "${images[0]}"
+          filename="apple-store-inventory-monitor_${version}_x64.dmg"
+          cp "${images[0]}" "installers/$filename"
+          (cd installers && shasum -a 256 "$filename" > SHA256SUMS.txt)
+          printf 'Version: %s\nTarget: x86_64-apple-darwin\nCommit: %s\nSigning: ad-hoc\n' \
+            "$version" "$GITHUB_SHA" > installers/BUILD-INFO.txt
+          echo "name=apple-store-inventory-monitor_${version}_macos_x64" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Intel Mac installer'
+            echo "- Version: $version"
+            echo '- Architecture: x86_64 only'
+            echo '- Signature: verified ad-hoc (not notarized)'
+            echo "- Download the artifact containing $filename and SHA256SUMS.txt."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: installers/
+          if-no-files-found: error
+          retention-days: 30
